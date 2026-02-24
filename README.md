@@ -23,6 +23,31 @@ running
 
 As an application: `java -jar circuit.jar`
 
+Modern app-style mode
+---------------------
+
+For a web-style experience closer to https://www.falstad.com/circuit/circuitjs.html,
+run:
+
+- `run-circuitjs-app.bat`
+
+The launcher opens the URL in app mode on Chrome or Edge when available,
+and falls back to your default browser otherwise.
+
+Offline desktop mode
+--------------------
+
+For a fully offline local app, use:
+
+- `run-circuitjs-offline.bat`
+
+This launches the local Java simulator from `src/circuit.jar` as a standalone
+desktop app. No internet is required after the jar is built.
+
+To create a shareable offline package (zip) containing the launcher and jar:
+
+- `package-circuitjs-offline.bat`
+
 If you want to use the circuit simulator as an applet, create an html file and load the applet with:
 
     <applet code=Circuit.class archive=circuit.jar width=600 height=50>
@@ -58,3 +83,4 @@ The terms and conditions for the original code still apply. Check <http://www.fa
     MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
 
 Rodrigo Hausen's changes are in the public domain (but it would be nice if you credited me alongside Paul if you use this version).
+
