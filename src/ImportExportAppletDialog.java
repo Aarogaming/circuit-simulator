@@ -1,7 +1,6 @@
 import java.awt.Dialog;
 import java.applet.Applet;
 import java.awt.Frame;
-import netscape.javascript.*; // add plugin.jar to classpath during compilation
 
 class ImportExportAppletDialog
 extends Dialog
@@ -26,20 +25,23 @@ implements ImportExportDialog
 	circuitDump = dump;
     }
 
-    public void execute()
-    {
-    	try
+	public void execute()
 	{
-	    JSObject window = JSObject.getWindow(cframe.applet);
+	    try
+	    {
+	    Object window = getBrowserWindow(cframe.applet);
+	    if (window == null)
+		throw new Exception("Browser JavaScript bridge is unavailable.");
+
 	    if ( type == Action.EXPORT )
 	    {
 		//cframe.setVisible(false);
-		window.call("exportCircuit", new  Object[] { circuitDump });
+		invokeBrowserCall(window, "exportCircuit", circuitDump);
 	    }
 	    else
 	    {
 		//cframe.setVisible(false);
-		circuitDump = (String)window.eval("importCircuit()");
+		circuitDump = (String) invokeBrowserEval(window, "importCircuit()");
 		cframe.readSetup( circuitDump );
 	    }
 	}
@@ -47,5 +49,23 @@ implements ImportExportDialog
 	{
 	    e.printStackTrace();
 	}
-    }
+	}
+
+	private Object getBrowserWindow(Applet applet) throws Exception
+	{
+	    Class<?> jsClass = Class.forName("netscape.javascript.JSObject");
+	    return jsClass.getMethod("getWindow", Applet.class).invoke(null, applet);
+	}
+
+	private void invokeBrowserCall(Object window, String functionName, Object arg) throws Exception
+	{
+	    window.getClass().getMethod("call", String.class, Object[].class)
+		.invoke(window, functionName, new Object[] { arg });
+	}
+
+	private Object invokeBrowserEval(Object window, String script) throws Exception
+	{
+	    return window.getClass().getMethod("eval", String.class)
+		.invoke(window, script);
+	}
 }
