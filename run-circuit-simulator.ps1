@@ -18,6 +18,66 @@ if ($env:SystemRoot) {
     }
 }
 
+function Test-PathSafe {
+    param([string]$LiteralPath)
+
+    if ([string]::IsNullOrWhiteSpace($LiteralPath)) {
+        return $false
+    }
+
+    return Test-Path -LiteralPath $LiteralPath
+}
+
+function Ensure-Directory {
+    param([string]$LiteralPath)
+
+    if ([string]::IsNullOrWhiteSpace($LiteralPath)) {
+        return
+    }
+
+    [System.IO.Directory]::CreateDirectory($LiteralPath) | Out-Null
+}
+
+function Start-ProcessPortable {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+        [string[]]$ArgumentList = @(),
+        [string]$WorkingDirectory,
+        [switch]$Hidden
+    )
+
+    $originalDirectory = $null
+    try {
+        if (-not [string]::IsNullOrWhiteSpace($WorkingDirectory)) {
+            $originalDirectory = [System.IO.Directory]::GetCurrentDirectory()
+            [System.IO.Directory]::SetCurrentDirectory($WorkingDirectory)
+        }
+
+        $startProcessParams = @{
+            FilePath = $FilePath
+        }
+        if ($ArgumentList -and $ArgumentList.Count -gt 0) {
+            $startProcessParams.ArgumentList = $ArgumentList
+        }
+        if ($Hidden) {
+            $startProcessParams.WindowStyle = 'Hidden'
+        }
+
+        Start-Process @startProcessParams | Out-Null
+        return $true
+    } catch {
+        return $false
+    } finally {
+        if ($null -ne $originalDirectory) {
+            try {
+                [System.IO.Directory]::SetCurrentDirectory($originalDirectory)
+            } catch {
+            }
+        }
+    }
+}
+
 function Test-PortableRoot {
     param([string]$Root)
     if (-not $Root) {
@@ -32,7 +92,7 @@ function Test-PortableRoot {
     )
 
     foreach ($marker in $markers) {
-        if (Test-Path $marker) {
+        if (Test-PathSafe -LiteralPath $marker) {
             return $true
         }
     }
@@ -47,9 +107,7 @@ if (($scriptLeaf -ieq "tools") -and (Test-PortableRoot -Root $parentRoot)) {
 
 $portableDataRoot = Join-Path $packageRoot ".circuit-simulator"
 $configDir = Join-Path $portableDataRoot "config"
-if (-not (Test-Path $configDir)) {
-    New-Item -ItemType Directory -Path $configDir -Force | Out-Null
-}
+Ensure-Directory -LiteralPath $configDir
 $configPath = Join-Path $configDir "circuit-simulator-startup.json"
 $legacyConfigPaths = @(
     (Join-Path $scriptRoot "circuit-simulator-startup.json")
@@ -71,33 +129,33 @@ function Get-DefaultConfig {
 }
 
 function Load-Config {
-    if (-not (Test-Path $configPath)) {
+    if (-not (Test-PathSafe -LiteralPath $configPath)) {
         foreach ($legacyConfigPath in $legacyConfigPaths) {
-            if (-not (Test-Path $legacyConfigPath)) {
+            if (-not (Test-PathSafe -LiteralPath $legacyConfigPath)) {
                 continue
             }
             try {
-                Copy-Item -Path $legacyConfigPath -Destination $configPath -Force
+                Copy-Item -LiteralPath $legacyConfigPath -Destination $configPath -Force
                 break
             } catch {
             }
         }
     }
-    if ($userConfigPath -and (-not (Test-Path $configPath)) -and (Test-Path $userConfigPath)) {
+    if ($userConfigPath -and (-not (Test-PathSafe -LiteralPath $configPath)) -and (Test-PathSafe -LiteralPath $userConfigPath)) {
         try {
-            Copy-Item -Path $userConfigPath -Destination $configPath -Force
+            Copy-Item -LiteralPath $userConfigPath -Destination $configPath -Force
         } catch {
         }
     }
 
-    if (-not (Test-Path $configPath)) {
+    if (-not (Test-PathSafe -LiteralPath $configPath)) {
         $default = Get-DefaultConfig
         Save-Config -Config $default
         return $default
     }
 
     try {
-        $json = Get-Content -Path $configPath -Raw | ConvertFrom-Json
+        $json = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
         $parsed = @{
             mode = if ($json.mode) { [string]$json.mode } else { "web" }
             simple = if ($null -ne $json.simple) { [bool]$json.simple } else { $false }
@@ -113,7 +171,7 @@ function Load-Config {
 
 function Save-Config {
     param([hashtable]$Config)
-    ($Config | ConvertTo-Json) | Set-Content -Path $configPath -Encoding utf8
+    ($Config | ConvertTo-Json) | Set-Content -LiteralPath $configPath -Encoding utf8
 }
 
 function Configure-Startup {
@@ -262,20 +320,15 @@ function Start-Native {
 
     $exe = $null
     foreach ($candidate in $nativeCandidates) {
-        if (Test-Path $candidate) {
+        if (Test-PathSafe -LiteralPath $candidate) {
             $exe = $candidate
             break
         }
     }
 
-    if ($exe -and (Test-Path $exe)) {
+    if ($exe -and (Test-PathSafe -LiteralPath $exe)) {
         $exeDir = Split-Path -Parent $exe
-        try {
-            Start-Process -FilePath $exe -WorkingDirectory $exeDir | Out-Null
-            return $true
-        } catch {
-            return $false
-        }
+        return Start-ProcessPortable -FilePath $exe -WorkingDirectory $exeDir
     }
     return $false
 }
@@ -288,13 +341,10 @@ function Start-Java {
     )
 
     foreach ($bat in $javaCandidates) {
-        if (Test-Path $bat) {
-            try {
-                $batDir = Split-Path -Parent $bat
-                Start-Process -FilePath $bat -WorkingDirectory $batDir | Out-Null
+        if (Test-PathSafe -LiteralPath $bat) {
+            $batDir = Split-Path -Parent $bat
+            if (Start-ProcessPortable -FilePath $bat -WorkingDirectory $batDir) {
                 return $true
-            } catch {
-                continue
             }
         }
     }
@@ -310,7 +360,7 @@ function Start-Web {
             $directLauncher = Join-Path $root "run-circuitjs-offline-web.ps1"
             $legacyDirectLauncher = Join-Path $root "offline-web-launcher.ps1"
             $directHtml = Join-Path $root "circuitjs.html"
-            if (((Test-Path $directLauncher) -or (Test-Path $legacyDirectLauncher)) -and (Test-Path $directHtml)) {
+            if (((Test-PathSafe -LiteralPath $directLauncher) -or (Test-PathSafe -LiteralPath $legacyDirectLauncher)) -and (Test-PathSafe -LiteralPath $directHtml)) {
                 return $root
             }
         }
@@ -323,8 +373,8 @@ function Start-Web {
             (Join-Path $scriptRoot "tools\circuitjs-offline-web-release.zip")
         )
         foreach ($releaseZipPath in $releaseZipPaths | Select-Object -Unique) {
-            if (Test-Path $releaseZipPath) {
-                $zipCandidates += Get-Item $releaseZipPath
+            if (Test-PathSafe -LiteralPath $releaseZipPath) {
+                $zipCandidates += Get-Item -LiteralPath $releaseZipPath
             }
         }
 
@@ -333,12 +383,12 @@ function Start-Web {
             (Join-Path $scriptRoot "dist")
         )
         foreach ($distDir in $distDirs | Select-Object -Unique) {
-            if (Test-Path $distDir) {
+            if (Test-PathSafe -LiteralPath $distDir) {
                 $distReleaseZip = Join-Path $distDir "circuitjs-offline-web-release.zip"
-                if (Test-Path $distReleaseZip) {
-                    $zipCandidates += Get-Item $distReleaseZip
+                if (Test-PathSafe -LiteralPath $distReleaseZip) {
+                    $zipCandidates += Get-Item -LiteralPath $distReleaseZip
                 }
-                $zipCandidates += Get-ChildItem -Path $distDir -Filter "circuitjs-offline-web*.zip" -ErrorAction SilentlyContinue
+                $zipCandidates += Get-ChildItem -LiteralPath $distDir -Filter "circuitjs-offline-web*.zip" -ErrorAction SilentlyContinue
             }
         }
 
@@ -349,8 +399,8 @@ function Start-Web {
             (Join-Path $scriptRoot "tools")
         )
         foreach ($searchDir in $searchDirs | Select-Object -Unique) {
-            if (Test-Path $searchDir) {
-                $zipCandidates += Get-ChildItem -Path $searchDir -Filter "circuitjs-offline-web*.zip" -ErrorAction SilentlyContinue
+            if (Test-PathSafe -LiteralPath $searchDir) {
+                $zipCandidates += Get-ChildItem -LiteralPath $searchDir -Filter "circuitjs-offline-web*.zip" -ErrorAction SilentlyContinue
             }
         }
 
@@ -363,26 +413,31 @@ function Start-Web {
         }
 
         $cacheRoot = Join-Path $portableDataRoot "offline-web-cache"
-        if (-not (Test-Path $cacheRoot)) {
-            New-Item -ItemType Directory -Path $cacheRoot -Force | Out-Null
-        }
+        Ensure-Directory -LiteralPath $cacheRoot
 
         $zipStamp = "$($zip.BaseName)-$($zip.Length)-$([int64]$zip.LastWriteTimeUtc.ToFileTimeUtc())"
         $zipStamp = ($zipStamp -replace '[^A-Za-z0-9._-]', '_')
         $target = Join-Path $cacheRoot $zipStamp
-        if (Test-Path $target) {
+        if (Test-PathSafe -LiteralPath $target) {
             $launcherPath = Join-Path $target "run-circuitjs-offline-web.ps1"
             $legacyLauncherPath = Join-Path $target "offline-web-launcher.ps1"
-            if ((Test-Path $launcherPath) -or (Test-Path $legacyLauncherPath)) {
+            if ((Test-PathSafe -LiteralPath $launcherPath) -or (Test-PathSafe -LiteralPath $legacyLauncherPath)) {
                 return $target
             }
         }
-        New-Item -ItemType Directory -Path $target -Force | Out-Null
-        Expand-Archive -Path $zip.FullName -DestinationPath $target -Force
+        try {
+            if (Test-PathSafe -LiteralPath $target) {
+                Remove-Item -LiteralPath $target -Recurse -Force
+            }
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            [System.IO.Compression.ZipFile]::ExtractToDirectory($zip.FullName, $target)
+        } catch {
+            return $null
+        }
 
         $launcherPath = Join-Path $target "run-circuitjs-offline-web.ps1"
         $legacyLauncherPath = Join-Path $target "offline-web-launcher.ps1"
-        if ((Test-Path $launcherPath) -or (Test-Path $legacyLauncherPath)) {
+        if ((Test-PathSafe -LiteralPath $launcherPath) -or (Test-PathSafe -LiteralPath $legacyLauncherPath)) {
             return $target
         }
 
@@ -395,10 +450,10 @@ function Start-Web {
     }
 
     $launcher = Join-Path $workspace "run-circuitjs-offline-web.ps1"
-    if (-not (Test-Path $launcher)) {
+    if (-not (Test-PathSafe -LiteralPath $launcher)) {
         $launcher = Join-Path $workspace "offline-web-launcher.ps1"
     }
-    if (-not (Test-Path $launcher)) {
+    if (-not (Test-PathSafe -LiteralPath $launcher)) {
         return $false
     }
 
@@ -411,12 +466,7 @@ function Start-Web {
         $args += "-Port", "$($Config.port)"
     }
 
-    try {
-        Start-Process -FilePath $powerShellExe -ArgumentList $args -WorkingDirectory $workspace -WindowStyle Hidden | Out-Null
-        return $true
-    } catch {
-        return $false
-    }
+    return Start-ProcessPortable -FilePath $powerShellExe -ArgumentList $args -WorkingDirectory $workspace -Hidden
 }
 
 $config = Load-Config
