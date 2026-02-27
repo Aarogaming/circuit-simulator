@@ -39,6 +39,13 @@ if exist "%PS%" if exist "%LAUNCHER%" (
 
 if not exist "%CFG_DIR%" mkdir "%CFG_DIR%" >nul 2>nul
 
+set "AUTO_MODE=1"
+if /I "%~1"=="--menu" set "AUTO_MODE=0"
+if /I "%~1"=="/menu" set "AUTO_MODE=0"
+
+if "%AUTO_MODE%"=="1" goto :auto_launch
+
+:interactive
 :preflight
 cls
 echo ===============================================
@@ -99,6 +106,24 @@ if "%CHOICE%"=="4" goto :configure
 if "%CHOICE%"=="5" goto :repair_ps1
 if "%CHOICE%"=="6" exit /b 0
 goto :menu
+
+:auto_launch
+if "%HAS_PS%"=="1" if defined WEB_ZIP (
+  "%PS%" -NoProfile -ExecutionPolicy Bypass -File "%LAUNCHER%" -Mode web
+  if not errorlevel 1 goto :done
+)
+
+if defined NATIVE_EXE (
+  start "Circuit Simulator" "%NATIVE_EXE%"
+  goto :done
+)
+
+if "%HAS_PS%"=="1" (
+  "%PS%" -NoProfile -ExecutionPolicy Bypass -File "%LAUNCHER%"
+  if not errorlevel 1 goto :done
+)
+
+goto :interactive
 
 :launch_default
 if "%HAS_PS%"=="1" (
