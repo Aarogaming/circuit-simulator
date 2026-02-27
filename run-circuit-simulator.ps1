@@ -17,11 +17,15 @@ if ($env:SystemRoot) {
         $powerShellExe = $defaultPowerShellExe
     }
 }
+$forceCompatConfig = ($env:CIRSIM_FORCE_CONFIG_COMPAT -eq "1")
+$hasConvertFromJson = (-not $forceCompatConfig) -and ($null -ne (Get-Command ConvertFrom-Json -ErrorAction SilentlyContinue))
+$hasConvertToJson = (-not $forceCompatConfig) -and ($null -ne (Get-Command ConvertTo-Json -ErrorAction SilentlyContinue))
+$hasExpandArchive = ($null -ne (Get-Command Expand-Archive -ErrorAction SilentlyContinue))
 
 function Test-PathSafe {
     param([string]$LiteralPath)
 
-    if ([string]::IsNullOrWhiteSpace($LiteralPath)) {
+    if (($null -eq $LiteralPath) -or ($LiteralPath -eq "")) {
         return $false
     }
 
@@ -31,11 +35,123 @@ function Test-PathSafe {
 function Ensure-Directory {
     param([string]$LiteralPath)
 
-    if ([string]::IsNullOrWhiteSpace($LiteralPath)) {
+    if (($null -eq $LiteralPath) -or ($LiteralPath -eq "")) {
         return
     }
 
     [System.IO.Directory]::CreateDirectory($LiteralPath) | Out-Null
+}
+
+function Read-TextFile {
+    param([string]$LiteralPath)
+
+    if (-not (Test-PathSafe -LiteralPath $LiteralPath)) {
+        return ""
+    }
+
+    try {
+        return [System.IO.File]::ReadAllText($LiteralPath)
+    } catch {
+        return ""
+    }
+}
+
+function Write-TextFileUtf8 {
+    param(
+        [string]$LiteralPath,
+        [string]$Content
+    )
+
+    $parent = Split-Path -Parent $LiteralPath
+    Ensure-Directory -LiteralPath $parent
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($LiteralPath, $Content, $utf8NoBom)
+}
+
+function Convert-ConfigToJsonText {
+    param([hashtable]$Config)
+
+    if ($hasConvertToJson) {
+        try {
+            return ($Config | ConvertTo-Json -Compress)
+        } catch {
+        }
+    }
+
+    $mode = [string]$Config.mode
+    if (($null -eq $mode) -or ($mode -eq "")) {
+        $mode = "web"
+    }
+    $modeEscaped = $mode.Replace('\', '\\').Replace('"', '\"')
+    $simpleValue = if ([bool]$Config.simple) { "true" } else { "false" }
+    $portValue = [int]$Config.port
+    return "{`"mode`":`"$modeEscaped`",`"simple`":$simpleValue,`"port`":$portValue}"
+}
+
+function Convert-JsonTextToConfig {
+    param(
+        [string]$Text,
+        [hashtable]$Default
+    )
+
+    $result = @{
+        mode = [string]$Default.mode
+        simple = [bool]$Default.simple
+        port = [int]$Default.port
+    }
+
+    if ($hasConvertFromJson) {
+        try {
+            $json = $Text | ConvertFrom-Json
+            if ($json.mode) {
+                $result.mode = [string]$json.mode
+            }
+            if ($null -ne $json.simple) {
+                $result.simple = [bool]$json.simple
+            }
+            if ($json.port) {
+                $result.port = [int]$json.port
+            }
+            return $result
+        } catch {
+        }
+    }
+
+    if ($Text -match '"mode"\s*:\s*"([^"]+)"') {
+        $result.mode = [string]$matches[1]
+    }
+    if ($Text -match '"simple"\s*:\s*(true|false)') {
+        $result.simple = ([string]$matches[1]).ToLowerInvariant() -eq "true"
+    }
+    if ($Text -match '"port"\s*:\s*(\d+)') {
+        $result.port = [int]$matches[1]
+    }
+    return $result
+}
+
+function Patch-WebLauncherCompatibility {
+    param([string]$LauncherPath)
+
+    if (-not (Test-PathSafe -LiteralPath $LauncherPath)) {
+        return
+    }
+
+    $original = Read-TextFile -LiteralPath $LauncherPath
+    if (($null -eq $original) -or ($original -eq "")) {
+        return
+    }
+
+    $patched = $original
+    $patched = $patched.Replace('Test-Path $shellFile', 'Test-Path -LiteralPath $shellFile')
+    $patched = $patched.Replace('Test-Path $launchFile', 'Test-Path -LiteralPath $launchFile')
+    $patched = $patched.Replace('Test-Path $runtimeDir', 'Test-Path -LiteralPath $runtimeDir')
+    $patched = $patched.Replace('Set-Content -Path $serverScript', 'Set-Content -LiteralPath $serverScript')
+    $patched = $patched.Replace('Test-Path $filePath -PathType Container', 'Test-Path -LiteralPath $filePath -PathType Container')
+    $patched = $patched.Replace('Test-Path $filePath -PathType Leaf', 'Test-Path -LiteralPath $filePath -PathType Leaf')
+
+    if ($patched -ne $original) {
+        Write-TextFileUtf8 -LiteralPath $LauncherPath -Content $patched
+    }
 }
 
 function Start-ProcessPortable {
@@ -49,7 +165,7 @@ function Start-ProcessPortable {
 
     $originalDirectory = $null
     try {
-        if (-not [string]::IsNullOrWhiteSpace($WorkingDirectory)) {
+        if (($null -ne $WorkingDirectory) -and ($WorkingDirectory -ne "")) {
             $originalDirectory = [System.IO.Directory]::GetCurrentDirectory()
             [System.IO.Directory]::SetCurrentDirectory($WorkingDirectory)
         }
@@ -62,6 +178,12 @@ function Start-ProcessPortable {
         }
         if ($Hidden) {
             $startProcessParams.WindowStyle = 'Hidden'
+            try {
+                Start-Process @startProcessParams | Out-Null
+                return $true
+            } catch {
+                $null = $startProcessParams.Remove('WindowStyle')
+            }
         }
 
         Start-Process @startProcessParams | Out-Null
@@ -75,6 +197,309 @@ function Start-ProcessPortable {
             } catch {
             }
         }
+    }
+}
+
+function Expand-ZipPortable {
+    param(
+        [string]$ZipPath,
+        [string]$DestinationPath
+    )
+
+    if (-not (Test-PathSafe -LiteralPath $ZipPath)) {
+        return $false
+    }
+
+    Ensure-Directory -LiteralPath $DestinationPath
+
+    if ($hasExpandArchive) {
+        try {
+            Expand-Archive -LiteralPath $ZipPath -DestinationPath $DestinationPath -Force
+            return $true
+        } catch {
+        }
+    }
+
+    try {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
+        [System.IO.Compression.ZipFile]::ExtractToDirectory($ZipPath, $DestinationPath)
+        return $true
+    } catch {
+    }
+
+    try {
+        $shell = New-Object -ComObject Shell.Application
+        $zipNamespace = $shell.NameSpace($ZipPath)
+        $targetNamespace = $shell.NameSpace($DestinationPath)
+        if (($null -eq $zipNamespace) -or ($null -eq $targetNamespace)) {
+            return $false
+        }
+
+        $targetNamespace.CopyHere($zipNamespace.Items(), 16)
+        $timeout = [DateTime]::UtcNow.AddSeconds(30)
+        while (([DateTime]::UtcNow -lt $timeout) -and ($targetNamespace.Items().Count -lt $zipNamespace.Items().Count)) {
+            Start-Sleep -Milliseconds 200
+        }
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Test-PortAvailable {
+    param([int]$Port)
+
+    if (($Port -lt 1) -or ($Port -gt 65535)) {
+        return $false
+    }
+
+    $listener = $null
+    try {
+        $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, $Port)
+        $listener.Start()
+        return $true
+    } catch {
+        return $false
+    } finally {
+        if ($listener) {
+            try {
+                $listener.Stop()
+            } catch {
+            }
+        }
+    }
+}
+
+function Resolve-WebPort {
+    param([int]$PreferredPort)
+
+    if (Test-PortAvailable -Port $PreferredPort) {
+        return $PreferredPort
+    }
+
+    $candidates = @(
+        ($PreferredPort + 1),
+        ($PreferredPort + 2),
+        19084,
+        19085,
+        19086,
+        18080,
+        8080
+    )
+    foreach ($candidate in ($candidates | Select-Object -Unique)) {
+        if (Test-PortAvailable -Port $candidate) {
+            return $candidate
+        }
+    }
+    return $PreferredPort
+}
+
+function Test-HttpPortReady {
+    param(
+        [int]$Port,
+        [int]$Attempts = 40
+    )
+
+    for ($i = 0; $i -lt $Attempts; $i++) {
+        $client = $null
+        try {
+            $client = New-Object System.Net.Sockets.TcpClient
+            $iar = $client.BeginConnect('127.0.0.1', $Port, $null, $null)
+            if ($iar.AsyncWaitHandle.WaitOne(250)) {
+                $client.EndConnect($iar)
+                return $true
+            }
+        } catch {
+        } finally {
+            if ($client) {
+                $client.Dispose()
+            }
+        }
+        Start-Sleep -Milliseconds 120
+    }
+
+    return $false
+}
+
+function Ensure-EmbeddedServerScript {
+    param([string]$RuntimeDir)
+
+    Ensure-Directory -LiteralPath $RuntimeDir
+    $scriptPath = Join-Path $RuntimeDir "embedded-http-server.ps1"
+    if (Test-PathSafe -LiteralPath $scriptPath) {
+        return $scriptPath
+    }
+
+    $serverScript = @'
+param(
+    [string]$RootPath,
+    [int]$Port
+)
+
+$ErrorActionPreference = "Stop"
+$rootFull = [System.IO.Path]::GetFullPath($RootPath)
+
+function Decode-RelativePath {
+    param([string]$RawPath)
+
+    $decoded = $RawPath
+    try {
+        $decoded = [System.Uri]::UnescapeDataString($RawPath.Replace('+', '%20'))
+    } catch {
+    }
+
+    if (($null -eq $decoded) -or ($decoded -eq "")) {
+        return "circuitjs.html"
+    }
+    return $decoded
+}
+
+function Get-MimeType {
+    param([string]$Path)
+
+    $ext = [System.IO.Path]::GetExtension($Path).ToLowerInvariant()
+    switch ($ext) {
+        '.html' { return 'text/html; charset=utf-8' }
+        '.js' { return 'application/javascript; charset=utf-8' }
+        '.css' { return 'text/css; charset=utf-8' }
+        '.json' { return 'application/json; charset=utf-8' }
+        '.txt' { return 'text/plain; charset=utf-8' }
+        '.xml' { return 'application/xml; charset=utf-8' }
+        '.svg' { return 'image/svg+xml' }
+        '.png' { return 'image/png' }
+        '.jpg' { return 'image/jpeg' }
+        '.jpeg' { return 'image/jpeg' }
+        '.gif' { return 'image/gif' }
+        '.ico' { return 'image/x-icon' }
+        '.woff' { return 'font/woff' }
+        '.woff2' { return 'font/woff2' }
+        default { return 'application/octet-stream' }
+    }
+}
+
+$listener = New-Object System.Net.HttpListener
+$listener.Prefixes.Add("http://127.0.0.1:$Port/")
+$listener.Start()
+
+try {
+    while ($listener.IsListening) {
+        $context = $listener.GetContext()
+        try {
+            $relative = Decode-RelativePath -RawPath ($context.Request.Url.AbsolutePath.TrimStart('/'))
+            $relative = $relative.Replace('/', '\')
+            $candidate = Join-Path $rootFull $relative
+            $fullPath = [System.IO.Path]::GetFullPath($candidate)
+
+            if (($fullPath.Length -lt $rootFull.Length) -or ($fullPath.Substring(0, $rootFull.Length).ToLowerInvariant() -ne $rootFull.ToLowerInvariant())) {
+                $context.Response.StatusCode = 403
+                $context.Response.Close()
+                continue
+            }
+
+            if (Test-Path -LiteralPath $fullPath -PathType Container) {
+                $fullPath = Join-Path $fullPath "index.html"
+            }
+
+            if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+                $context.Response.StatusCode = 404
+                $context.Response.Close()
+                continue
+            }
+
+            $bytes = [System.IO.File]::ReadAllBytes($fullPath)
+            $context.Response.StatusCode = 200
+            $context.Response.ContentType = Get-MimeType -Path $fullPath
+            $context.Response.ContentLength64 = $bytes.Length
+            $context.Response.OutputStream.Write($bytes, 0, $bytes.Length)
+            $context.Response.OutputStream.Flush()
+            $context.Response.Close()
+        } catch {
+            try {
+                $context.Response.StatusCode = 500
+                $context.Response.Close()
+            } catch {
+            }
+        }
+    }
+} finally {
+    if ($listener.IsListening) {
+        $listener.Stop()
+    }
+    $listener.Close()
+}
+'@
+
+    Write-TextFileUtf8 -LiteralPath $scriptPath -Content $serverScript
+    return $scriptPath
+}
+
+function Start-WebEmbedded {
+    param(
+        [string]$Workspace,
+        [hashtable]$Config
+    )
+
+    $offlineHome = Join-Path $Workspace "offline-home.html"
+    $launchFile = if (Test-PathSafe -LiteralPath $offlineHome) { $offlineHome } else { Join-Path $Workspace "circuitjs.html" }
+    if (-not (Test-PathSafe -LiteralPath $launchFile)) {
+        return $false
+    }
+
+    $requestedPort = 19084
+    if ($Config.port -gt 0) {
+        $requestedPort = [int]$Config.port
+    }
+    $resolvedPort = Resolve-WebPort -PreferredPort $requestedPort
+    if ($resolvedPort -le 0) {
+        return $false
+    }
+    if ($Config.port -ne $resolvedPort) {
+        $Config.port = $resolvedPort
+        try {
+            Save-Config -Config $Config
+        } catch {
+        }
+    }
+
+    $runtimeDir = Join-Path $portableDataRoot "web-runtime"
+    $serverScript = Ensure-EmbeddedServerScript -RuntimeDir $runtimeDir
+    if (-not (Test-PathSafe -LiteralPath $serverScript)) {
+        return $false
+    }
+
+    $args = @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", $serverScript,
+        "-RootPath", $Workspace,
+        "-Port", "$resolvedPort"
+    )
+    if (-not (Start-ProcessPortable -FilePath $powerShellExe -ArgumentList $args -WorkingDirectory $runtimeDir -Hidden)) {
+        return $false
+    }
+
+    if (-not (Test-HttpPortReady -Port $resolvedPort -Attempts 45)) {
+        return $false
+    }
+
+    $launchName = [System.IO.Path]::GetFileName($launchFile)
+    $url = "http://127.0.0.1:$resolvedPort/$launchName"
+    if ($Config.simple) {
+        if ($launchName -eq "offline-home.html") {
+            $url = "http://127.0.0.1:$resolvedPort/circuitjs.html"
+        }
+        if ($url.Contains('?')) {
+            $url += "&hideSidebar=true"
+        } else {
+            $url += "?hideSidebar=true"
+        }
+    }
+
+    try {
+        Start-Process $url | Out-Null
+        return $true
+    } catch {
+        return $false
     }
 }
 
@@ -155,13 +580,9 @@ function Load-Config {
     }
 
     try {
-        $json = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
-        $parsed = @{
-            mode = if ($json.mode) { [string]$json.mode } else { "web" }
-            simple = if ($null -ne $json.simple) { [bool]$json.simple } else { $false }
-            port = if ($json.port) { [int]$json.port } else { 19084 }
-        }
-        return $parsed
+        $default = Get-DefaultConfig
+        $rawText = Read-TextFile -LiteralPath $configPath
+        return Convert-JsonTextToConfig -Text $rawText -Default $default
     } catch {
         $default = Get-DefaultConfig
         Save-Config -Config $default
@@ -171,7 +592,8 @@ function Load-Config {
 
 function Save-Config {
     param([hashtable]$Config)
-    ($Config | ConvertTo-Json) | Set-Content -LiteralPath $configPath -Encoding utf8
+    $jsonText = Convert-ConfigToJsonText -Config $Config
+    Write-TextFileUtf8 -LiteralPath $configPath -Content $jsonText
 }
 
 function Configure-Startup {
@@ -429,8 +851,9 @@ function Start-Web {
             if (Test-PathSafe -LiteralPath $target) {
                 Remove-Item -LiteralPath $target -Recurse -Force
             }
-            Add-Type -AssemblyName System.IO.Compression.FileSystem
-            [System.IO.Compression.ZipFile]::ExtractToDirectory($zip.FullName, $target)
+            if (-not (Expand-ZipPortable -ZipPath $zip.FullName -DestinationPath $target)) {
+                return $null
+            }
         } catch {
             return $null
         }
@@ -448,6 +871,11 @@ function Start-Web {
     if (-not $workspace) {
         return $false
     }
+    if ($env:CIRSIM_ENABLE_EMBEDDED_SERVER -eq "1") {
+        if (Start-WebEmbedded -Workspace $workspace -Config $Config) {
+            return $true
+        }
+    }
 
     $launcher = Join-Path $workspace "run-circuitjs-offline-web.ps1"
     if (-not (Test-PathSafe -LiteralPath $launcher)) {
@@ -456,17 +884,59 @@ function Start-Web {
     if (-not (Test-PathSafe -LiteralPath $launcher)) {
         return $false
     }
+    Patch-WebLauncherCompatibility -LauncherPath $launcher
 
     $args = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $launcher)
+    $args += "-NoServer"
     $args += "-Silent"
     if ($Config.simple) {
         $args += "-Simple"
     }
+    $requestedPort = 19084
     if ($Config.port -gt 0) {
-        $args += "-Port", "$($Config.port)"
+        $requestedPort = [int]$Config.port
+    }
+    $resolvedPort = Resolve-WebPort -PreferredPort $requestedPort
+    if ($resolvedPort -gt 0) {
+        if ($Config.port -ne $resolvedPort) {
+            $Config.port = $resolvedPort
+            try {
+                Save-Config -Config $Config
+            } catch {
+            }
+        }
+        $args += "-Port", "$resolvedPort"
     }
 
-    return Start-ProcessPortable -FilePath $powerShellExe -ArgumentList $args -WorkingDirectory $workspace -Hidden
+    $originalPath = $env:Path
+    $originalLocalAppData = $env:LOCALAPPDATA
+    try {
+        if (($null -eq $env:LOCALAPPDATA) -or ($env:LOCALAPPDATA -eq "")) {
+            $fallbackLocalAppData = Join-Path $portableDataRoot "localappdata"
+            Ensure-Directory -LiteralPath $fallbackLocalAppData
+            $env:LOCALAPPDATA = $fallbackLocalAppData
+        }
+
+        if ($env:SystemRoot) {
+            $psDir = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0"
+            if (Test-PathSafe -LiteralPath $psDir) {
+                if (($null -eq $env:Path) -or ($env:Path -eq "")) {
+                    $env:Path = $psDir
+                } elseif ($env:Path.ToLowerInvariant().IndexOf($psDir.ToLowerInvariant()) -lt 0) {
+                    $env:Path = "$psDir;$env:Path"
+                }
+            }
+        }
+
+        return Start-ProcessPortable -FilePath $powerShellExe -ArgumentList $args -WorkingDirectory $workspace -Hidden
+    } finally {
+        $env:Path = $originalPath
+        if (($null -eq $originalLocalAppData) -or ($originalLocalAppData -eq "")) {
+            Remove-Item Env:LOCALAPPDATA -ErrorAction SilentlyContinue
+        } else {
+            $env:LOCALAPPDATA = $originalLocalAppData
+        }
+    }
 }
 
 $config = Load-Config

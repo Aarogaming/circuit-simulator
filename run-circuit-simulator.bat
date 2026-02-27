@@ -16,7 +16,17 @@ if errorlevel 1 (
 )
 if not "%ROOT:~-1%"=="\" set "ROOT=%ROOT%\"
 
-set "PS=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
+set "PS="
+if defined SystemRoot if exist "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" set "PS=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
+if not defined PS if defined ProgramW6432 if exist "%ProgramW6432%\PowerShell\7\pwsh.exe" set "PS=%ProgramW6432%\PowerShell\7\pwsh.exe"
+if not defined PS if defined ProgramFiles if exist "%ProgramFiles%\PowerShell\7\pwsh.exe" set "PS=%ProgramFiles%\PowerShell\7\pwsh.exe"
+if not defined PS (
+  for %%P in (pwsh.exe powershell.exe) do (
+    if not defined PS (
+      where %%P >nul 2>nul && set "PS=%%P"
+    )
+  )
+)
 set "LAUNCHER=%ROOT%run-circuit-simulator.ps1"
 if not exist "%LAUNCHER%" set "LAUNCHER=%SCRIPT_DIR%run-circuit-simulator.ps1"
 
@@ -32,8 +42,8 @@ if not exist "%WEB_ZIP%" set "WEB_ZIP="
 set "CFG_DIR=%ROOT%.circuit-simulator\config"
 
 set "HAS_PS=0"
-if exist "%PS%" if exist "%LAUNCHER%" (
-  "%PS%" -NoProfile -Command "exit 0" >nul 2>nul
+if defined PS if exist "%LAUNCHER%" (
+  call :run_ps -Command "exit 0" >nul 2>nul
   if not errorlevel 1 set "HAS_PS=1"
 )
 
@@ -109,7 +119,7 @@ goto :menu
 
 :auto_launch
 if "%HAS_PS%"=="1" if defined WEB_ZIP (
-  "%PS%" -NoProfile -ExecutionPolicy Bypass -File "%LAUNCHER%" -Mode web
+  call :run_ps -File "%LAUNCHER%" -Mode web
   if not errorlevel 1 goto :done
 )
 
@@ -119,7 +129,7 @@ if defined NATIVE_EXE (
 )
 
 if "%HAS_PS%"=="1" (
-  "%PS%" -NoProfile -ExecutionPolicy Bypass -File "%LAUNCHER%"
+  call :run_ps -File "%LAUNCHER%"
   if not errorlevel 1 goto :done
 )
 
@@ -127,7 +137,7 @@ goto :interactive
 
 :launch_default
 if "%HAS_PS%"=="1" (
-  "%PS%" -NoProfile -ExecutionPolicy Bypass -File "%LAUNCHER%"
+  call :run_ps -File "%LAUNCHER%"
 ) else (
   if defined NATIVE_EXE (
     start "Circuit Simulator" "%NATIVE_EXE%"
@@ -142,7 +152,7 @@ goto :done
 
 :launch_native
 if "%HAS_PS%"=="1" (
-  "%PS%" -NoProfile -ExecutionPolicy Bypass -File "%LAUNCHER%" -Mode native
+  call :run_ps -File "%LAUNCHER%" -Mode native
 ) else (
   if defined NATIVE_EXE (
     start "Circuit Simulator" "%NATIVE_EXE%"
@@ -180,7 +190,7 @@ if not defined WEB_ZIP (
   pause
   goto :menu
 )
-"%PS%" -NoProfile -ExecutionPolicy Bypass -File "%LAUNCHER%" -Mode web
+call :run_ps -File "%LAUNCHER%" -Mode web
 goto :done
 
 :configure
@@ -190,18 +200,26 @@ if not "%HAS_PS%"=="1" (
   pause
   goto :menu
 )
-"%PS%" -NoProfile -ExecutionPolicy Bypass -File "%LAUNCHER%" -Configure
+call :run_ps -File "%LAUNCHER%" -Configure
 goto :done
 
 :repair_ps1
 echo.
 echo Repairing .ps1 association...
+if not defined PS set "PS=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
 assoc .ps1=Microsoft.PowerShellScript.1
 ftype Microsoft.PowerShellScript.1="%PS%" "%%1" %%*
 echo.
 echo Done. If access was denied, rerun this launcher as Administrator.
 pause
 goto :menu
+
+:run_ps
+if not defined PS exit /b 1
+"%PS%" -NoLogo -NoProfile -ExecutionPolicy Bypass %*
+if not errorlevel 1 exit /b 0
+"%PS%" -NoLogo -NoProfile %*
+exit /b %errorlevel%
 
 :is_portable_root
 set "CAND=%~1"
