@@ -2,15 +2,23 @@
 setlocal
 
 set "SCRIPT_DIR=%~dp0"
+for %%I in ("%SCRIPT_DIR%") do set "SCRIPT_DIR=%%~fI"
+if not "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR%\"
 set "ROOT=%SCRIPT_DIR%"
-if exist "%ROOT%..\Circuit Simulator.exe" set "ROOT=%ROOT%..\"
-if exist "%ROOT%..\Circuit Simulator\Circuit Simulator.exe" set "ROOT=%ROOT%..\"
-if exist "%ROOT%..\circuitjs-offline-web-release.zip" set "ROOT=%ROOT%..\"
-for %%I in ("%ROOT%") do set "ROOT=%%~fI\"
+set "PARENT=%SCRIPT_DIR%..\"
+for %%I in ("%PARENT%") do set "PARENT=%%~fI"
+if not "%PARENT:~-1%"=="\" set "PARENT=%PARENT%\"
+
+call :is_portable_root "%ROOT%"
+if errorlevel 1 (
+  call :is_portable_root "%PARENT%"
+  if not errorlevel 1 set "ROOT=%PARENT%"
+)
+if not "%ROOT:~-1%"=="\" set "ROOT=%ROOT%\"
 
 set "PS=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
-set "LAUNCHER=%SCRIPT_DIR%run-circuit-simulator.ps1"
-if not exist "%LAUNCHER%" set "LAUNCHER=%ROOT%run-circuit-simulator.ps1"
+set "LAUNCHER=%ROOT%run-circuit-simulator.ps1"
+if not exist "%LAUNCHER%" set "LAUNCHER=%SCRIPT_DIR%run-circuit-simulator.ps1"
 
 set "NATIVE_EXE=%ROOT%Circuit Simulator.exe"
 if not exist "%NATIVE_EXE%" set "NATIVE_EXE=%ROOT%Circuit Simulator\Circuit Simulator.exe"
@@ -169,6 +177,17 @@ echo.
 echo Done. If access was denied, rerun this launcher as Administrator.
 pause
 goto :menu
+
+:is_portable_root
+set "CAND=%~1"
+if not defined CAND exit /b 1
+if exist "%CAND%\run-circuit-simulator.ps1" exit /b 0
+if exist "%CAND%\run-circuit-simulator.bat" exit /b 0
+if exist "%CAND%\Circuit Simulator.exe" exit /b 0
+if exist "%CAND%\Circuit Simulator\Circuit Simulator.exe" exit /b 0
+if exist "%CAND%\circuitjs-offline-web-release.zip" exit /b 0
+if exist "%CAND%\tools\circuitjs-offline-web-release.zip" exit /b 0
+exit /b 1
 
 :done
 exit /b 0

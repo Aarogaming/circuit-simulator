@@ -10,6 +10,13 @@ $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $packageRoot = $scriptRoot
 $parentRoot = Split-Path -Parent $scriptRoot
 $scriptLeaf = Split-Path -Leaf $scriptRoot
+$powerShellExe = "powershell"
+if ($env:SystemRoot) {
+    $defaultPowerShellExe = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+    if (Test-Path $defaultPowerShellExe) {
+        $powerShellExe = $defaultPowerShellExe
+    }
+}
 
 function Test-PortableRoot {
     param([string]$Root)
@@ -50,7 +57,10 @@ $legacyConfigPaths = @(
 if ($packageRoot -ne $scriptRoot) {
     $legacyConfigPaths += (Join-Path $packageRoot "circuit-simulator-startup.json")
 }
-$userConfigPath = Join-Path $env:LOCALAPPDATA "CircuitSimulator\circuit-simulator-startup.json"
+$userConfigPath = $null
+if ($env:LOCALAPPDATA) {
+    $userConfigPath = Join-Path $env:LOCALAPPDATA "CircuitSimulator\circuit-simulator-startup.json"
+}
 
 function Get-DefaultConfig {
     return @{
@@ -73,7 +83,7 @@ function Load-Config {
             }
         }
     }
-    if (-not (Test-Path $configPath) -and (Test-Path $userConfigPath)) {
+    if ($userConfigPath -and (-not (Test-Path $configPath)) -and (Test-Path $userConfigPath)) {
         try {
             Copy-Item -Path $userConfigPath -Destination $configPath -Force
         } catch {
@@ -357,7 +367,9 @@ function Start-Web {
             New-Item -ItemType Directory -Path $cacheRoot -Force | Out-Null
         }
 
-        $target = Join-Path $cacheRoot ($zip.BaseName)
+        $zipStamp = "$($zip.BaseName)-$($zip.Length)-$([int64]$zip.LastWriteTimeUtc.ToFileTimeUtc())"
+        $zipStamp = ($zipStamp -replace '[^A-Za-z0-9._-]', '_')
+        $target = Join-Path $cacheRoot $zipStamp
         if (Test-Path $target) {
             $launcherPath = Join-Path $target "run-circuitjs-offline-web.ps1"
             $legacyLauncherPath = Join-Path $target "offline-web-launcher.ps1"
@@ -400,7 +412,7 @@ function Start-Web {
     }
 
     try {
-        Start-Process -FilePath "powershell" -ArgumentList $args -WorkingDirectory $workspace -WindowStyle Hidden | Out-Null
+        Start-Process -FilePath $powerShellExe -ArgumentList $args -WorkingDirectory $workspace -WindowStyle Hidden | Out-Null
         return $true
     } catch {
         return $false
