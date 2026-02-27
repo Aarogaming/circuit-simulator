@@ -1,11 +1,26 @@
 @echo off
 setlocal
 
-set "ROOT=%~dp0"
+set "SCRIPT_DIR=%~dp0"
+set "ROOT=%SCRIPT_DIR%"
+if exist "%ROOT%..\Circuit Simulator.exe" set "ROOT=%ROOT%..\"
+if exist "%ROOT%..\Circuit Simulator\Circuit Simulator.exe" set "ROOT=%ROOT%..\"
+if exist "%ROOT%..\circuitjs-offline-web-release.zip" set "ROOT=%ROOT%..\"
+for %%I in ("%ROOT%") do set "ROOT=%%~fI\"
+
 set "PS=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
-set "LAUNCHER=%ROOT%run-circuit-simulator.ps1"
-set "NATIVE_EXE=%ROOT%Circuit Simulator\Circuit Simulator.exe"
+set "LAUNCHER=%SCRIPT_DIR%run-circuit-simulator.ps1"
+if not exist "%LAUNCHER%" set "LAUNCHER=%ROOT%run-circuit-simulator.ps1"
+
+set "NATIVE_EXE=%ROOT%Circuit Simulator.exe"
+if not exist "%NATIVE_EXE%" set "NATIVE_EXE=%ROOT%Circuit Simulator\Circuit Simulator.exe"
+if not exist "%NATIVE_EXE%" set "NATIVE_EXE="
+
 set "WEB_ZIP=%ROOT%circuitjs-offline-web-release.zip"
+if not exist "%WEB_ZIP%" set "WEB_ZIP=%ROOT%tools\circuitjs-offline-web-release.zip"
+if not exist "%WEB_ZIP%" set "WEB_ZIP=%SCRIPT_DIR%circuitjs-offline-web-release.zip"
+if not exist "%WEB_ZIP%" set "WEB_ZIP="
+
 set "CFG_DIR=%ROOT%.circuit-simulator\config"
 
 set "HAS_PS=0"
@@ -13,8 +28,6 @@ if exist "%PS%" if exist "%LAUNCHER%" (
   "%PS%" -NoProfile -Command "exit 0" >nul 2>nul
   if not errorlevel 1 set "HAS_PS=1"
 )
-
-if not exist "%NATIVE_EXE%" goto :missing_native
 
 if not exist "%CFG_DIR%" mkdir "%CFG_DIR%" >nul 2>nul
 
@@ -36,8 +49,12 @@ if "%HAS_PS%"=="1" (
   echo [WARN] PowerShell unavailable or broken
 )
 
-if exist "%WEB_ZIP%" (
-  echo [OK] Web offline package found
+if defined WEB_ZIP (
+  if exist "%WEB_ZIP%" (
+    echo [OK] Web offline package found
+  ) else (
+    echo [WARN] Web offline package missing
+  )
 ) else (
   echo [WARN] Web offline package missing
 )
@@ -79,7 +96,14 @@ goto :menu
 if "%HAS_PS%"=="1" (
   "%PS%" -NoProfile -ExecutionPolicy Bypass -File "%LAUNCHER%"
 ) else (
-  start "Circuit Simulator" "%NATIVE_EXE%"
+  if defined NATIVE_EXE (
+    start "Circuit Simulator" "%NATIVE_EXE%"
+  ) else (
+    echo.
+    echo No launch mode available without PowerShell.
+    pause
+    goto :menu
+  )
 )
 goto :done
 
@@ -87,7 +111,14 @@ goto :done
 if "%HAS_PS%"=="1" (
   "%PS%" -NoProfile -ExecutionPolicy Bypass -File "%LAUNCHER%" -Mode native
 ) else (
-  start "Circuit Simulator" "%NATIVE_EXE%"
+  if defined NATIVE_EXE (
+    start "Circuit Simulator" "%NATIVE_EXE%"
+  ) else (
+    echo.
+    echo Native executable is missing in this package.
+    pause
+    goto :menu
+  )
 )
 goto :done
 
@@ -95,16 +126,24 @@ goto :done
 if not "%HAS_PS%"=="1" (
   echo.
   echo Web mode requires working PowerShell on this PC.
-  echo Launching native mode instead.
-  start "Circuit Simulator" "%NATIVE_EXE%"
+  if defined NATIVE_EXE (
+    echo Launching native mode instead.
+    start "Circuit Simulator" "%NATIVE_EXE%"
+  ) else (
+    echo Native executable is also missing.
+  )
   pause
   goto :menu
 )
-if not exist "%WEB_ZIP%" (
+if not defined WEB_ZIP (
   echo.
-  echo Web package not found: %WEB_ZIP%
-  echo Launching native mode instead.
-  start "Circuit Simulator" "%NATIVE_EXE%"
+  echo Web package not found.
+  if defined NATIVE_EXE (
+    echo Launching native mode instead.
+    start "Circuit Simulator" "%NATIVE_EXE%"
+  ) else (
+    echo Native executable is also missing.
+  )
   pause
   goto :menu
 )
@@ -130,12 +169,6 @@ echo.
 echo Done. If access was denied, rerun this launcher as Administrator.
 pause
 goto :menu
-
-:missing_native
-echo Missing native executable:
-echo %NATIVE_EXE%
-pause
-exit /b 1
 
 :done
 exit /b 0

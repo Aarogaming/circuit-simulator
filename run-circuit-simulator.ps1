@@ -7,28 +7,70 @@ param(
 $ErrorActionPreference = "Stop"
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$portableDataRoot = Join-Path $scriptRoot ".circuit-simulator"
+$packageRoot = $scriptRoot
+$parentRoot = Split-Path -Parent $scriptRoot
+$scriptLeaf = Split-Path -Leaf $scriptRoot
+
+function Test-PortableRoot {
+    param([string]$Root)
+    if (-not $Root) {
+        return $false
+    }
+
+    $markers = @(
+        (Join-Path $Root "Circuit Simulator.exe"),
+        (Join-Path $Root "Circuit Simulator\Circuit Simulator.exe"),
+        (Join-Path $Root "circuitjs-offline-web-release.zip"),
+        (Join-Path $Root "tools\circuitjs-offline-web-release.zip")
+    )
+
+    foreach ($marker in $markers) {
+        if (Test-Path $marker) {
+            return $true
+        }
+    }
+    return $false
+}
+
+if (($scriptLeaf -ieq "tools") -and (Test-PortableRoot -Root $parentRoot)) {
+    $packageRoot = $parentRoot
+} elseif (-not (Test-PortableRoot -Root $packageRoot) -and (Test-PortableRoot -Root $parentRoot)) {
+    $packageRoot = $parentRoot
+}
+
+$portableDataRoot = Join-Path $packageRoot ".circuit-simulator"
 $configDir = Join-Path $portableDataRoot "config"
 if (-not (Test-Path $configDir)) {
     New-Item -ItemType Directory -Path $configDir -Force | Out-Null
 }
 $configPath = Join-Path $configDir "circuit-simulator-startup.json"
-$legacyConfigPath = Join-Path $scriptRoot "circuit-simulator-startup.json"
+$legacyConfigPaths = @(
+    (Join-Path $scriptRoot "circuit-simulator-startup.json")
+)
+if ($packageRoot -ne $scriptRoot) {
+    $legacyConfigPaths += (Join-Path $packageRoot "circuit-simulator-startup.json")
+}
 $userConfigPath = Join-Path $env:LOCALAPPDATA "CircuitSimulator\circuit-simulator-startup.json"
 
 function Get-DefaultConfig {
     return @{
-        mode = "native"
+        mode = "web"
         simple = $false
         port = 19084
     }
 }
 
 function Load-Config {
-    if (-not (Test-Path $configPath) -and (Test-Path $legacyConfigPath)) {
-        try {
-            Copy-Item -Path $legacyConfigPath -Destination $configPath -Force
-        } catch {
+    if (-not (Test-Path $configPath)) {
+        foreach ($legacyConfigPath in $legacyConfigPaths) {
+            if (-not (Test-Path $legacyConfigPath)) {
+                continue
+            }
+            try {
+                Copy-Item -Path $legacyConfigPath -Destination $configPath -Force
+                break
+            } catch {
+            }
         }
     }
     if (-not (Test-Path $configPath) -and (Test-Path $userConfigPath)) {
@@ -47,7 +89,7 @@ function Load-Config {
     try {
         $json = Get-Content -Path $configPath -Raw | ConvertFrom-Json
         $parsed = @{
-            mode = if ($json.mode) { [string]$json.mode } else { "native" }
+            mode = if ($json.mode) { [string]$json.mode } else { "web" }
             simple = if ($null -ne $json.simple) { [bool]$json.simple } else { $false }
             port = if ($json.port) { [int]$json.port } else { 19084 }
         }
@@ -198,9 +240,14 @@ function Configure-StartupGui {
 
 function Start-Native {
     $nativeCandidates = @(
+        (Join-Path $packageRoot "dist-native\Circuit Simulator\Circuit Simulator.exe"),
         (Join-Path $scriptRoot "dist-native\Circuit Simulator\Circuit Simulator.exe"),
+        (Join-Path $packageRoot "Circuit Simulator\Circuit Simulator.exe"),
+        (Join-Path $packageRoot "Circuit Simulator.exe"),
         (Join-Path $scriptRoot "Circuit Simulator\Circuit Simulator.exe"),
-        (Join-Path $scriptRoot "Circuit Simulator.exe")
+        (Join-Path $scriptRoot "Circuit Simulator.exe"),
+        (Join-Path $scriptRoot "..\Circuit Simulator.exe"),
+        (Join-Path $scriptRoot "..\Circuit Simulator\Circuit Simulator.exe")
     )
 
     $exe = $null
@@ -224,13 +271,21 @@ function Start-Native {
 }
 
 function Start-Java {
-    $bat = Join-Path $scriptRoot "run-circuitjs-offline.bat"
-    if (Test-Path $bat) {
-        try {
-            Start-Process -FilePath $bat -WorkingDirectory $scriptRoot | Out-Null
-            return $true
-        } catch {
-            return $false
+    $javaCandidates = @(
+        (Join-Path $packageRoot "run-circuitjs-offline.bat"),
+        (Join-Path $scriptRoot "run-circuitjs-offline.bat"),
+        (Join-Path $scriptRoot "..\run-circuitjs-offline.bat")
+    )
+
+    foreach ($bat in $javaCandidates) {
+        if (Test-Path $bat) {
+            try {
+                $batDir = Split-Path -Parent $bat
+                Start-Process -FilePath $bat -WorkingDirectory $batDir | Out-Null
+                return $true
+            } catch {
+                continue
+            }
         }
     }
     return $false
@@ -240,30 +295,57 @@ function Start-Web {
     param([hashtable]$Config)
 
     function Resolve-WebWorkspace {
-        $directLauncher = Join-Path $scriptRoot "run-circuitjs-offline-web.ps1"
-        $legacyDirectLauncher = Join-Path $scriptRoot "offline-web-launcher.ps1"
-        $directHtml = Join-Path $scriptRoot "circuitjs.html"
-        if (((Test-Path $directLauncher) -or (Test-Path $legacyDirectLauncher)) -and (Test-Path $directHtml)) {
-            return $scriptRoot
-        }
-
-        $distDir = Join-Path $scriptRoot "dist"
-        $zipCandidates = @()
-        $portableReleaseZip = Join-Path $scriptRoot "circuitjs-offline-web-release.zip"
-        if (Test-Path $portableReleaseZip) {
-            $zipCandidates += Get-Item $portableReleaseZip
-        }
-
-        if (Test-Path $distDir) {
-            $distReleaseZip = Join-Path $distDir "circuitjs-offline-web-release.zip"
-            if (Test-Path $distReleaseZip) {
-                $zipCandidates += Get-Item $distReleaseZip
+        $directRoots = @($packageRoot, $scriptRoot)
+        foreach ($root in $directRoots | Select-Object -Unique) {
+            $directLauncher = Join-Path $root "run-circuitjs-offline-web.ps1"
+            $legacyDirectLauncher = Join-Path $root "offline-web-launcher.ps1"
+            $directHtml = Join-Path $root "circuitjs.html"
+            if (((Test-Path $directLauncher) -or (Test-Path $legacyDirectLauncher)) -and (Test-Path $directHtml)) {
+                return $root
             }
-            $zipCandidates += Get-ChildItem -Path $distDir -Filter "circuitjs-offline-web*.zip" -ErrorAction SilentlyContinue
         }
 
-        $zipCandidates += Get-ChildItem -Path $scriptRoot -Filter "circuitjs-offline-web*.zip" -ErrorAction SilentlyContinue
+        $zipCandidates = @()
+        $releaseZipPaths = @(
+            (Join-Path $packageRoot "circuitjs-offline-web-release.zip"),
+            (Join-Path $scriptRoot "circuitjs-offline-web-release.zip"),
+            (Join-Path $packageRoot "tools\circuitjs-offline-web-release.zip"),
+            (Join-Path $scriptRoot "tools\circuitjs-offline-web-release.zip")
+        )
+        foreach ($releaseZipPath in $releaseZipPaths | Select-Object -Unique) {
+            if (Test-Path $releaseZipPath) {
+                $zipCandidates += Get-Item $releaseZipPath
+            }
+        }
+
+        $distDirs = @(
+            (Join-Path $packageRoot "dist"),
+            (Join-Path $scriptRoot "dist")
+        )
+        foreach ($distDir in $distDirs | Select-Object -Unique) {
+            if (Test-Path $distDir) {
+                $distReleaseZip = Join-Path $distDir "circuitjs-offline-web-release.zip"
+                if (Test-Path $distReleaseZip) {
+                    $zipCandidates += Get-Item $distReleaseZip
+                }
+                $zipCandidates += Get-ChildItem -Path $distDir -Filter "circuitjs-offline-web*.zip" -ErrorAction SilentlyContinue
+            }
+        }
+
+        $searchDirs = @(
+            $packageRoot,
+            $scriptRoot,
+            (Join-Path $packageRoot "tools"),
+            (Join-Path $scriptRoot "tools")
+        )
+        foreach ($searchDir in $searchDirs | Select-Object -Unique) {
+            if (Test-Path $searchDir) {
+                $zipCandidates += Get-ChildItem -Path $searchDir -Filter "circuitjs-offline-web*.zip" -ErrorAction SilentlyContinue
+            }
+        }
+
         $zip = $zipCandidates |
+            Sort-Object FullName -Unique |
             Sort-Object LastWriteTime -Descending |
             Select-Object -First 1
         if (-not $zip) {
