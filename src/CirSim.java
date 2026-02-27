@@ -175,7 +175,7 @@ public class CirSim extends Frame
     public void init() {
 	String euroResistor = null;
 	String useFrameStr = null;
-	boolean printable = true; // hausen: changed from false to true
+	boolean printable = false;
 	boolean convention = true;
 
 	CircuitElm.initClass(this);
@@ -696,16 +696,49 @@ public class CirSim extends Frame
 	    shortcuts[s] = sclass;
 	}
     }
+
+    int getScopeStripHeight() {
+	if (winSize == null)
+	    return 0;
+	if (scopeCount <= 0) {
+	    int h = winSize.height / 30;
+	    if (h < 20)
+		h = 20;
+	    if (h > 38)
+		h = 38;
+	    return h;
+	}
+	int h = winSize.height / 5;
+	if (h < 96)
+	    h = 96;
+	int maxh = winSize.height - 140;
+	if (maxh < 64)
+	    maxh = 64;
+	if (h > maxh)
+	    h = maxh;
+	return h;
+    }
+
+    void updateCircuitAreaBounds() {
+	if (winSize == null)
+	    return;
+	int circuitHeight = winSize.height - getScopeStripHeight();
+	if (circuitHeight < 64)
+	    circuitHeight = 64;
+	if (circuitHeight > winSize.height)
+	    circuitHeight = winSize.height;
+	if (circuitArea == null)
+	    circuitArea = new Rectangle(0, 0, winSize.width, circuitHeight);
+	else
+	    circuitArea.setBounds(0, 0, winSize.width, circuitHeight);
+    }
     
     void handleResize() {
         winSize = cv.getSize();
-	if (winSize.width == 0)
+	if (winSize.width == 0 || winSize.height == 0)
 	    return;
 	dbimage = main.createImage(winSize.width, winSize.height);
-	int h = winSize.height / 5;
-	/*if (h < 128 && winSize.height > 300)
-	  h = 128;*/
-	circuitArea = new Rectangle(0, 0, winSize.width, winSize.height-h);
+	updateCircuitAreaBounds();
 	int i;
 	int minx = 1000, maxx = 0, miny = 1000, maxy = 0;
 	for (i = 0; i != elmList.size(); i++) {
@@ -987,6 +1020,7 @@ public class CirSim extends Frame
 	}
 	while (scopeCount > 0 && scopes[scopeCount-1].elm == null)
 	    scopeCount--;
+	updateCircuitAreaBounds();
 	int h = winSize.height - circuitArea.height;
 	pos = 0;
 	for (i = 0; i != scopeCount; i++)
